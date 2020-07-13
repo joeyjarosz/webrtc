@@ -5,5 +5,7 @@ package webrtc
 // http://draft.ortc.org/#dom-rtcrtpcodingparameters
 type RTPCodingParameters struct {
 	SSRC        uint32 `json:"ssrc"`
-	PayloadType uint8  `json:"payloadType"`
+	RID         string
+	ID          string
+	PayloadType uint8 `json:"payloadType"`
 }

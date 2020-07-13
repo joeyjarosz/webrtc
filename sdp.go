@@ -13,11 +13,15 @@ import (
 )
 
 type trackDetails struct {
-	mid   string
-	kind  RTPCodecType
-	label string
-	id    string
-	ssrc  uint32
+	mid    string
+	msid   string
+	mstid  string
+	kind   RTPCodecType
+	label  string
+	id     string
+	ssrc   uint32
+	useRid bool
+	rids   []string
 }
 
 // SDPSectionType specifies media type sections
@@ -31,14 +35,13 @@ const (
 )
 
 // extract all trackDetails from an SDP.
-func trackDetailsFromSDP(log logging.LeveledLogger, s *sdp.SessionDescription) map[uint32]trackDetails {
-	incomingTracks := map[uint32]trackDetails{}
+func trackDetailsFromSDP(log logging.LeveledLogger, s *sdp.SessionDescription) map[string]trackDetails {
+	incomingTracks := map[string]trackDetails{}
 	rtxRepairFlows := map[uint32]bool{}
 
 	for _, media := range s.MediaDescriptions {
 		// Plan B can have multiple tracks in a signle media section
 		trackLabel := ""
-		trackID := ""
 
 		// If media section is recvonly or inactive skip
 		if _, ok := media.Attribute(sdp.AttrKeyRecvOnly); ok {
@@ -52,12 +55,20 @@ func trackDetailsFromSDP(log logging.LeveledLogger, s *sdp.SessionDescription) m
 			continue
 		}
 
+		_, useRid := media.Attribute("rid")
+
 		codecType := NewRTPCodecType(media.MediaName.Media)
 		if codecType == 0 {
 			continue
 		}
 
+			var ssrc uint32
+
+			msid := ""
+			mstid := ""
+
 		for _, attr := range media.Attributes {
+
 			switch attr.Key {
 			case sdp.AttrKeySSRCGroup:
 				split := strings.Split(attr.Value, " ")
@@ -78,7 +89,7 @@ func trackDetailsFromSDP(log logging.LeveledLogger, s *sdp.SessionDescription) m
 							continue
 						}
 						rtxRepairFlows[uint32(rtxRepairFlow)] = true
-						delete(incomingTracks, uint32(rtxRepairFlow)) // Remove if rtx was added as track before
+						delete(incomingTracks, string(rtxRepairFlow)) // Remove if rtx was added as track before
 					}
 				}
 
@@ -88,42 +99,49 @@ func trackDetailsFromSDP(log logging.LeveledLogger, s *sdp.SessionDescription) m
 			case sdp.AttrKeyMsid:
 				split := strings.Split(attr.Value, " ")
 				if len(split) == 2 {
-					trackLabel = split[0]
-					trackID = split[1]
+					msid = split[0]
+					mstid = split[1]
 				}
 
 			case sdp.AttrKeySSRC:
+				if useRid {
+					// ignoring provided SSRC since we're using rid attributes
+					continue
+				}
 				split := strings.Split(attr.Value, " ")
-				ssrc, err := strconv.ParseUint(split[0], 10, 32)
+				ssrcI, err := strconv.ParseUint(split[0], 10, 32)
 				if err != nil {
 					log.Warnf("Failed to parse SSRC: %v", err)
 					continue
 				}
-				if rtxRepairFlow := rtxRepairFlows[uint32(ssrc)]; rtxRepairFlow {
-					continue // This ssrc is a RTX repair flow, ignore
-				}
-				if existingValues, ok := incomingTracks[uint32(ssrc)]; ok && existingValues.label != "" && existingValues.id != "" {
-					continue // This ssrc is already fully defined
-				}
-
-				if len(split) == 3 && strings.HasPrefix(split[1], "msid:") {
-					trackLabel = split[1][len("msid:"):]
-					trackID = split[2]
-				}
-
+				ssrc = uint32(ssrcI)
 				// Plan B might send multiple a=ssrc lines under a single m= section. This is also why a single trackDetails{}
 				// is not defined at the top of the loop over s.MediaDescriptions.
-				incomingTracks[uint32(ssrc)] = trackDetails{
-					mid:   midValue,
-					kind:  codecType,
-					label: trackLabel,
-					id:    trackID,
-					ssrc:  uint32(ssrc),
-				}
 			}
 		}
-	}
 
+			rids := getRids(media)
+			ridKeys := make([]string, 0, len(rids))
+			for k := range rids {
+				ridKeys = append(ridKeys, k)
+			}
+
+			// TODO don't add if neither RID nor SSRC
+			if midValue == "" && len(ridKeys) == 0 {
+				continue
+			}
+
+			incomingTracks[midValue] = trackDetails{
+			msid:   msid,
+			mstid:  mstid,
+			kind:   codecType,
+			label:  trackLabel,
+			id:     midValue,
+			ssrc:   ssrc,
+			rids:   ridKeys,
+			useRid: len(ridKeys) > 0,
+			}
+		}
 	return incomingTracks
 }
 
@@ -269,8 +287,15 @@ func addTransceiverSDP(d *sdp.SessionDescription, isPlanB bool, dtlsFingerprints
 		}
 	}
 
+	if len(mediaSection.ridMap) > 0 {
+		recvRids := make([]string, 0, len(mediaSection.ridMap))
 	for rid := range mediaSection.ridMap {
 		media.WithValueAttribute("rid", rid+" recv")
+			recvRids = append(recvRids, rid)
+		}
+
+		// Simulcast
+		media.WithValueAttribute("simulcast", "recv "+strings.Join(recvRids, ";"))
 	}
 
 	for _, mt := range transceivers {
@@ -560,4 +585,22 @@ func remoteExts(session *sdp.SessionDescription) (map[SDPSectionType]map[int]sdp
 		}
 	}
 	return remoteExtMaps, nil
+}
+
+// GetExtMapByURI return a copy of the extmap matching the provided
+// URI. Note that the extmap value will change if not yet negotiated
+func getExtMapByURI(exts map[SDPSectionType][]sdp.ExtMap, uri string) *sdp.ExtMap {
+	for _, extList := range exts {
+		for _, extMap := range extList {
+			if extMap.URI.String() == uri {
+				return &sdp.ExtMap{
+					Value:     extMap.Value,
+					Direction: extMap.Direction,
+					URI:       extMap.URI,
+					ExtAttr:   extMap.ExtAttr,
+				}
+			}
+		}
+	}
+	return nil
 }

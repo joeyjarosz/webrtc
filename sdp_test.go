@@ -204,6 +204,7 @@ func TestTrackDetailsFromSDP(t *testing.T) {
 						Media: "video",
 					},
 					Attributes: []sdp.Attribute{
+						{Key: "mid", Value: "4"},
 						{Key: "sendonly"},
 						{Key: "rid", Value: "f send pt=97;max-width=1280;max-height=720"},
 					},
@@ -213,27 +214,27 @@ func TestTrackDetailsFromSDP(t *testing.T) {
 
 		tracks := trackDetailsFromSDP(nil, s)
 		assert.Equal(t, 3, len(tracks))
-		if _, ok := tracks[1000]; ok {
+		if _, ok := tracks["0"]; ok {
 			assert.Fail(t, "got the unknown track ssrc:1000 which should have been skipped")
 		}
-		if track, ok := tracks[2000]; !ok {
+		if track, ok := tracks["1"]; !ok {
 			assert.Fail(t, "missing audio track with ssrc:2000")
 		} else {
 			assert.Equal(t, RTPCodecTypeAudio, track.kind)
 			assert.Equal(t, uint32(2000), track.ssrc)
 			assert.Equal(t, "audio_trk_label", track.label)
 		}
-		if track, ok := tracks[3000]; !ok {
+		if track, ok := tracks["2"]; !ok {
 			assert.Fail(t, "missing video track with ssrc:3000")
 		} else {
 			assert.Equal(t, RTPCodecTypeVideo, track.kind)
 			assert.Equal(t, uint32(3000), track.ssrc)
 			assert.Equal(t, "video_trk_label", track.label)
 		}
-		if _, ok := tracks[4000]; ok {
-			assert.Fail(t, "got the rtx track ssrc:3000 which should have been skipped")
+		if track, ok := tracks["2"]; ok && track.ssrc == 4000 {
+			assert.Fail(t, "got the rtx track ssrc:4000 which should have been skipped")
 		}
-		if track, ok := tracks[5000]; !ok {
+		if track, ok := tracks["3"]; !ok {
 			assert.Fail(t, "missing video track with ssrc:5000")
 		} else {
 			assert.Equal(t, RTPCodecTypeVideo, track.kind)
